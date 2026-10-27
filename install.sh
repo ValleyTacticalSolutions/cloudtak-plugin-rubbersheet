@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 #
-# install.sh � deploy Rubber Sheet into a CloudTAK checkout.
+# install.sh — deploy Rubber Sheet into a CloudTAK checkout.
 #
-# This plugin is a flat Vue/TS repo (index.ts at the root). CloudTAK's
-# WEB_PLUGINS env var can clone it, but PDF page rendering needs pdfjs-dist
-# in the CloudTAK app, which WEB_PLUGINS does not install. Use this script.
+# This plugin is a flat Vue/TS repo (index.ts at the root). PDF.js is
+# vendored under lib/vendor/pdfjs/, so the CloudTAK app does not need a
+# host pdfjs-dist dependency. WEB_PLUGINS / marketplace copy-only installs
+# work once these files are on disk and the API image is rebuilt; use this
+# script for pull + copy + rebuild in one step.
 #
 # This script:
-# � fetch the newest plugin source (git pull, or clone GitHub if this
+# — fetch the newest plugin source (git pull, or clone GitHub if this
 #   folder is a marketplace copy without its own .git)
-# � copy plugin sources ? <CloudTAK>/app/plugins/rubber-sheet/
-# � add pdfjs-dist to the CloudTAK app if it is not already a dependency
-# � remove a pre-13.102 copy under api/web/plugins/ if one is still there
-# � rebuild + restart the CloudTAK API image so the plugin is baked in.
+# — copy plugin sources → <CloudTAK>/app/plugins/rubber-sheet/
+# — remove a leftover host pdfjs-dist entry if an older installer added one
+# — remove a pre-13.102 copy under api/web/plugins/ if one is still there
+# — rebuild + restart the CloudTAK API image so the plugin is baked in.
 #
 # Usage:
 #   Install / update:  ./install.sh [/path/to/CloudTAK]
@@ -28,7 +30,8 @@
 #   --no-build          Copy/remove files only; skip the docker rebuild + restart.
 #   --remove            Uninstall: delete the copied files, then rebuild.
 #
-# Requires: bash; git (unless --no-pull or --remove); python3; and (unless --no-build) docker + docker compose.
+# Requires: bash; git (unless --no-pull or --remove); python3 (for leftover
+# host-dep cleanup); and (unless --no-build) docker + docker compose.
 #
 # Env:
 #   RUBBER_SHEET_GIT_URL   Override the GitHub clone URL.
@@ -37,7 +40,6 @@
 set -euo pipefail
 
 INSTALL_DIR_NAME="rubber-sheet"
-PDFJS_VERSION="4.10.38"
 PLUGIN_GIT_URL="${RUBBER_SHEET_GIT_URL:-https://github.com/ValleyTacticalSolutions/cloudtak-plugin-rubbersheet.git}"
 PLUGIN_GIT_REF="${RUBBER_SHEET_GIT_REF:-main}"
 
@@ -137,47 +139,52 @@ pull_newest_source() {
     git -C "$SOURCE_DIR" log -1 --oneline
 }
 
-ensure_pdfjs() {
+# Older installs mutated CloudTAK app/package.json for pdfjs-dist. PDF.js is
+# now vendored in the plugin; drop that leftover host dep when present.
+cleanup_host_pdfjs() {
     local pkg="$CT_DIR/app/package.json"
     if [ ! -f "$pkg" ]; then
-        echo "ERROR: $pkg not found." >&2
-        exit 1
+        return 0
     fi
     if ! command -v python3 >/dev/null 2>&1; then
-        echo "ERROR: python3 is required to check app/package.json for pdfjs-dist." >&2
-        exit 1
+        echo "WARNING: python3 not found; skipping leftover pdfjs-dist cleanup." >&2
+        return 0
     fi
-    if python3 - "$pkg" "$PDFJS_VERSION" <<'PY'
+    if ! python3 - "$pkg" <<'PY'
 import json, sys
-path, version = sys.argv[1], sys.argv[2]
+path = sys.argv[1]
 with open(path) as handle:
     data = json.load(handle)
 deps = data.get("dependencies") or {}
-sys.exit(0 if deps.get("pdfjs-dist") else 1)
+sys.exit(0 if "pdfjs-dist" in deps else 1)
 PY
     then
-        echo "pdfjs-dist is already a CloudTAK app dependency."
         return 0
     fi
 
+    echo "Removing leftover host pdfjs-dist (PDF.js is vendored in the plugin)..."
     if command -v npm >/dev/null 2>&1; then
-        echo "Adding pdfjs-dist@${PDFJS_VERSION} to the CloudTAK app..."
-        (cd "$CT_DIR/app" && npm install "pdfjs-dist@${PDFJS_VERSION}" --save)
+        (cd "$CT_DIR/app" && npm uninstall pdfjs-dist)
         return 0
     fi
 
-    python3 - "$pkg" "$PDFJS_VERSION" <<'PY'
+    python3 - "$pkg" <<'PY'
 import json, sys
-path, version = sys.argv[1], sys.argv[2]
+path = sys.argv[1]
 with open(path) as handle:
     data = json.load(handle)
-data.setdefault("dependencies", {})["pdfjs-dist"] = version
+deps = data.get("dependencies") or {}
+deps.pop("pdfjs-dist", None)
+if deps:
+    data["dependencies"] = deps
+else:
+    data.pop("dependencies", None)
 with open(path, "w") as handle:
     json.dump(data, handle, indent=2)
     handle.write("\n")
 PY
-    echo "Added pdfjs-dist to app/package.json."
-    echo "npm is not on this machine; the Docker build's npm install will fetch it."
+    echo "Removed pdfjs-dist from app/package.json."
+    echo "npm is not on this machine; if app/package-lock.json still lists it, prune it on the next app npm install."
 }
 
 REQUESTED="$CT_DIR"
@@ -265,7 +272,7 @@ else
     echo "  source: $SOURCE_DIR"
     remove_legacy
     echo
-    ensure_pdfjs
+    cleanup_host_pdfjs
 fi
 
 echo
