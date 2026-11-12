@@ -1,5 +1,5 @@
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import workerCode from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?raw';
+import { getDocument, GlobalWorkerOptions } from './vendor/pdfjs/pdf.mjs';
+import workerCode from './vendor/pdfjs/pdf.worker.min.mjs?raw';
 import { maxImageSide } from './device.ts';
 
 const THUMB_MAX_SIDE = 320;
