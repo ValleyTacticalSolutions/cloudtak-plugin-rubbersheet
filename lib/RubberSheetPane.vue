@@ -207,6 +207,27 @@
                     >
                         {{ formatHint }}
                     </p>
+                    <label
+                        class='form-label mb-0 d-flex justify-content-between align-items-baseline'
+                        for='rubber-sheet-quality'
+                    >
+                        <span>Quality</span>
+                        <span class='text-secondary small'>{{ sheetUi.exportQuality }}</span>
+                    </label>
+                    <input
+                        id='rubber-sheet-quality'
+                        class='form-range'
+                        type='range'
+                        min='1'
+                        max='95'
+                        step='1'
+                        :value='sheetUi.exportQuality'
+                        :disabled='sheetUi.busy'
+                        @input='onQuality'
+                    >
+                    <p class='text-secondary small mb-1'>
+                        Higher keeps more detail and makes a larger file. GeoTIFF uses JPEG tiles so transparent areas stay see-through in ATAK.
+                    </p>
                     <TablerButton
                         class='btn-primary rubber-action w-100'
                         title='Download the export'
@@ -340,8 +361,9 @@ import { touchWording as useTouchWording } from './device.ts';
 import PdfPagePicker from './PdfPagePicker.vue';
 import RemoveSheetConfirm from './RemoveSheetConfirm.vue';
 import WarpModeStrip from './WarpModeStrip.vue';
-import { EDIT_ROUTE_NAME, FORMAT_KEY } from './constants.ts';
+import { EDIT_ROUTE_NAME, FORMAT_KEY, QUALITY_KEY } from './constants.ts';
 import { beginEditSession, returnFocus } from './edit-session.ts';
+import { clampExportQuality, saveExportQuality } from './export-quality.ts';
 import { parseExportType, saveExportType } from './export-type.ts';
 import {
     addCurrentAsOverlay,
@@ -392,8 +414,8 @@ const formats = [
 ];
 
 const formatHints: Record<string, string> = {
-    kmz: 'Image overlay for TAK clients and Google Earth.',
-    geotiff: 'GIS raster file with its map position.',
+    kmz: 'Image overlay for TAK clients and Google Earth. Transparent images stay PNG; opaque ones use JPEG quality below.',
+    geotiff: 'JPEG-tiled WGS84 raster with map position; transparent areas stay see-through in ATAK.',
     geopdf: 'PDF with its map position, for GIS tools and printing.',
     zip: 'KMZ, GeoTIFF and GeoPDF together in one file.',
 };
@@ -477,6 +499,14 @@ function onFormat(value: string): void {
     if (!type) return;
     sheetUi.exportType = type;
     saveExportType(typeof localStorage === 'undefined' ? undefined : localStorage, FORMAT_KEY, type);
+}
+
+function onQuality(event: Event): void {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    const quality = clampExportQuality(Number(target.value));
+    sheetUi.exportQuality = quality;
+    saveExportQuality(typeof localStorage === 'undefined' ? undefined : localStorage, QUALITY_KEY, quality);
 }
 </script>
 

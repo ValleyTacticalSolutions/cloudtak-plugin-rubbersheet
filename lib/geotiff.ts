@@ -1,200 +1,423 @@
-import { deflateZlib } from './deflate.ts';
+/**
+ * In-browser GeoTIFF writer: WGS84 north-up, 256×256 JPEG tiles, optional alpha
+ * band, and internal overviews (required for ATAK Image Overlay with transparency).
+ *
+ * Copyright (c) 2026 Andrew McMillen
+ * SPDX-License-Identifier: MIT
+ */
+
+import { encodeJpegMulti } from './jpeg-multi.ts';
 import type { Raster } from './warp.ts';
 
-/**
- * JPEG-in-TIFF plus a separate mask band is not reliable to hand-write, and a wrong
- * JPEG TIFF is worse than a larger file. This writer stores unassociated RGBA with
- * zlib deflate (TIFF compression 8) and horizontal predictor 2, which is the fallback
- * the export plan allows. The raster is already capped at 4096 px.
- */
-export function applyHorizontalPredictor(rgba: Uint8Array, width: number, height: number): Uint8Array {
-    const out = rgba.slice();
-    const samples = 4;
-    for (let y = 0; y < height; y++) {
-        const row = y * width * samples;
-        for (let x = width - 1; x >= 1; x--) {
-            const pixel = row + x * samples;
-            const previous = pixel - samples;
-            for (let sample = 0; sample < samples; sample++) {
-                out[pixel + sample] = (out[pixel + sample] - out[previous + sample]) & 0xff;
-            }
-        }
-    }
-    return out;
-}
+const TILE = 256;
 
-export function undoHorizontalPredictor(rgba: Uint8Array, width: number, height: number): Uint8Array {
-    const out = rgba.slice();
-    const samples = 4;
-    for (let y = 0; y < height; y++) {
-        const row = y * width * samples;
-        for (let x = 1; x < width; x++) {
-            const pixel = row + x * samples;
-            const previous = pixel - samples;
-            for (let sample = 0; sample < samples; sample++) {
-                out[pixel + sample] = (out[pixel + sample] + out[previous + sample]) & 0xff;
-            }
-        }
-    }
-    return out;
-}
-
-class TiffBuffer {
-    private readonly parts: Uint8Array[] = [];
-    length = 0;
-
-    bytes(data: Uint8Array): void {
-        this.parts.push(data);
-        this.length += data.length;
-    }
-
-    u8(value: number): void {
-        this.bytes(Uint8Array.of(value & 0xff));
-    }
-
-    u16(value: number): void {
-        const data = new Uint8Array(2);
-        new DataView(data.buffer).setUint16(0, value, true);
-        this.bytes(data);
-    }
-
-    u32(value: number): void {
-        const data = new Uint8Array(4);
-        new DataView(data.buffer).setUint32(0, value >>> 0, true);
-        this.bytes(data);
-    }
-
-    f64(value: number): void {
-        const data = new Uint8Array(8);
-        new DataView(data.buffer).setFloat64(0, value, true);
-        this.bytes(data);
-    }
-
-    align(boundary = 2): void {
-        while (this.length % boundary !== 0) this.u8(0);
-    }
-
-    concat(): Uint8Array {
-        const out = new Uint8Array(this.length);
-        let offset = 0;
-        for (const part of this.parts) {
-            out.set(part, offset);
-            offset += part.length;
-        }
-        return out;
-    }
-}
-
-const TYPE_SHORT = 3;
-const TYPE_LONG = 4;
-const TYPE_DOUBLE = 12;
-
-interface TiffTag {
-    id: number;
-    type: number;
-    count: number;
-    value?: number;
-    offset?: number;
-}
-
-function tagEntry(tag: TiffTag): Uint8Array {
-    const entry = new Uint8Array(12);
-    const view = new DataView(entry.buffer);
-    view.setUint16(0, tag.id, true);
-    view.setUint16(2, tag.type, true);
-    view.setUint32(4, tag.count, true);
-    if (tag.offset !== undefined) {
-        view.setUint32(8, tag.offset, true);
-    } else {
-        const value = tag.value ?? 0;
-        if (tag.type === TYPE_SHORT) view.setUint16(8, value, true);
-        else view.setUint32(8, value >>> 0, true);
-    }
-    return entry;
-}
-
-export async function buildGeoTiff(raster: Raster, bounds: {
+export interface GeoTiffBounds {
     west: number;
     south: number;
     east: number;
     north: number;
-}): Promise<Uint8Array> {
-    const predicted = applyHorizontalPredictor(raster.rgba, raster.width, raster.height);
-    const compressed = await deflateZlib(predicted);
-    const scaleX = (bounds.east - bounds.west) / raster.width;
-    const scaleY = (bounds.north - bounds.south) / raster.height;
+}
 
-    const geoKeys = [
-        1, 1, 0, 4,
-        1024, 0, 1, 2,
-        1025, 0, 1, 1,
-        2048, 0, 1, 4326,
-        2054, 0, 1, 9102,
-    ];
+export interface GeoTiffOptions {
+    /** JPEG quality 1–95. Default 85. */
+    quality?: number;
+    onProgress?: (fraction: number) => void;
+}
 
-    const body = new TiffBuffer();
-    body.u8(0x49);
-    body.u8(0x49);
-    body.u16(42);
-    body.u32(0);
+interface LevelImage {
+    width: number;
+    height: number;
+    rgba: Uint8ClampedArray | Uint8Array;
+}
 
-    body.align(2);
-    const stripOffset = body.length;
-    body.bytes(compressed);
+/** Halve an RGBA image (2×2 alpha-weighted average) for an overview level. */
+export function halveRgba(img: LevelImage): LevelImage {
+    const { width: w, height: h, rgba } = img;
+    const W = Math.max(1, Math.ceil(w / 2));
+    const H = Math.max(1, Math.ceil(h / 2));
+    const out = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+            let r = 0;
+            let g = 0;
+            let b = 0;
+            let a = 0;
+            for (let dy = 0; dy < 2; dy++) {
+                const sy = Math.min(h - 1, 2 * y + dy);
+                for (let dx = 0; dx < 2; dx++) {
+                    const i = (sy * w + Math.min(w - 1, 2 * x + dx)) * 4;
+                    const al = rgba[i + 3];
+                    r += rgba[i] * al;
+                    g += rgba[i + 1] * al;
+                    b += rgba[i + 2] * al;
+                    a += al;
+                }
+            }
+            if (a < 2 * 255) continue;
+            const o = (y * W + x) * 4;
+            out[o] = r / a;
+            out[o + 1] = g / a;
+            out[o + 2] = b / a;
+            out[o + 3] = 255;
+        }
+    }
+    return { width: W, height: H, rgba: out };
+}
 
-    body.align(2);
-    const bitsOffset = body.length;
-    body.u16(8);
-    body.u16(8);
-    body.u16(8);
-    body.u16(8);
+function jpegSampling(bytes: Uint8Array): [number, number] {
+    for (let i = 2; i < bytes.length - 9;) {
+        if (bytes[i] !== 0xff) {
+            i++;
+            continue;
+        }
+        const m = bytes[i + 1];
+        const len = (bytes[i + 2] << 8) | bytes[i + 3];
+        if (m >= 0xc0 && m <= 0xc2) {
+            const n = bytes[i + 9];
+            if (n !== 3) return [1, 1];
+            const s0 = bytes[i + 11];
+            const s1 = bytes[i + 14];
+            return [(s0 >> 4) / (s1 >> 4), (s0 & 15) / (s1 & 15)];
+        }
+        i += 2 + len;
+    }
+    return [2, 2];
+}
 
-    body.align(8);
-    const scaleOffset = body.length;
-    body.f64(scaleX);
-    body.f64(scaleY);
-    body.f64(0);
+function hasTransparentPixel(rgba: Uint8Array | Uint8ClampedArray): boolean {
+    for (let i = 3; i < rgba.length; i += 4) {
+        if (!rgba[i]) return true;
+    }
+    return false;
+}
 
-    body.align(8);
-    const tieOffset = body.length;
-    body.f64(0);
-    body.f64(0);
-    body.f64(0);
-    body.f64(bounds.west);
-    body.f64(bounds.north);
-    body.f64(0);
+async function encodeRgbJpeg(tileData: ImageData, quality: number): Promise<Uint8Array> {
+    const canvas = document.createElement('canvas');
+    canvas.width = TILE;
+    canvas.height = TILE;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Could not encode GeoTIFF tile');
+    ctx.putImageData(tileData, 0, 0);
+    const blob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(
+            resolve,
+            'image/jpeg',
+            Math.min(0.95, Math.max(0.05, quality / 100)),
+        );
+    });
+    canvas.width = canvas.height = 0;
+    if (!blob) throw new Error('Could not encode GeoTIFF tile');
+    return new Uint8Array(await blob.arrayBuffer());
+}
 
-    body.align(2);
-    const geoOffset = body.length;
-    for (const key of geoKeys) body.u16(key);
+function packRgbTile(
+    rgba: Uint8Array | Uint8ClampedArray,
+    w: number,
+    h: number,
+    ti: number,
+    tj: number,
+): Uint8Array {
+    const raw = new Uint8Array(TILE * TILE * 3);
+    for (let y = 0; y < TILE; y++) {
+        const sy = tj * TILE + y;
+        for (let x = 0; x < TILE; x++) {
+            const sx = ti * TILE + x;
+            const o = (y * TILE + x) * 3;
+            if (sx < w && sy < h) {
+                const s = (sy * w + sx) * 4;
+                if (rgba[s + 3]) {
+                    raw[o] = rgba[s];
+                    raw[o + 1] = rgba[s + 1];
+                    raw[o + 2] = rgba[s + 2];
+                }
+            }
+        }
+    }
+    return raw;
+}
 
-    body.align(2);
-    const ifdOffset = body.length;
-    const tags: TiffTag[] = [
-        { id: 256, type: TYPE_LONG, count: 1, value: raster.width },
-        { id: 257, type: TYPE_LONG, count: 1, value: raster.height },
-        { id: 258, type: TYPE_SHORT, count: 4, offset: bitsOffset },
-        { id: 259, type: TYPE_SHORT, count: 1, value: 8 },
-        { id: 262, type: TYPE_SHORT, count: 1, value: 2 },
-        { id: 273, type: TYPE_LONG, count: 1, value: stripOffset },
-        { id: 277, type: TYPE_SHORT, count: 1, value: 4 },
-        { id: 278, type: TYPE_LONG, count: 1, value: raster.height },
-        { id: 279, type: TYPE_LONG, count: 1, value: compressed.length },
-        { id: 284, type: TYPE_SHORT, count: 1, value: 1 },
-        { id: 317, type: TYPE_SHORT, count: 1, value: 2 },
-        { id: 338, type: TYPE_SHORT, count: 1, value: 2 },
-        { id: 33550, type: TYPE_DOUBLE, count: 3, offset: scaleOffset },
-        { id: 33922, type: TYPE_DOUBLE, count: 6, offset: tieOffset },
-        { id: 34735, type: TYPE_SHORT, count: geoKeys.length, offset: geoOffset },
-    ];
+async function encodeLevel(
+    img: LevelImage,
+    quality: number,
+    withAlpha: boolean,
+    onTile?: () => void,
+): Promise<{
+    width: number;
+    height: number;
+    jpegs: Uint8Array[];
+    sampling: [number, number];
+    /** Browser canvas JPEG is YCbCr; jpeg-multi 3-band fallback is raw RGB. */
+    ycbcr: boolean;
+}> {
+    const { width: w, height: h, rgba } = img;
+    const tx = Math.ceil(w / TILE);
+    const ty = Math.ceil(h / TILE);
+    const jpegs: Uint8Array[] = [];
+    let sampling: [number, number] = [2, 2];
+    const useCanvas = !withAlpha && typeof document !== 'undefined';
+    const ycbcr = useCanvas;
 
-    body.u16(tags.length);
-    for (const tag of tags) body.bytes(tagEntry(tag));
-    body.u32(0);
+    let tileData: ImageData | null = null;
+    if (useCanvas) {
+        tileData = new ImageData(TILE, TILE);
+    }
+    const rawAlpha = withAlpha ? new Uint8Array(TILE * TILE * 4) : null;
 
-    const file = body.concat();
-    new DataView(file.buffer).setUint32(4, ifdOffset, true);
-    return file;
+    for (let j = 0; j < ty; j++) {
+        for (let i = 0; i < tx; i++) {
+            let bytes: Uint8Array;
+            if (withAlpha && rawAlpha) {
+                for (let y = 0; y < TILE; y++) {
+                    const sy = j * TILE + y;
+                    for (let x = 0; x < TILE; x++) {
+                        const sx = i * TILE + x;
+                        const o = (y * TILE + x) * 4;
+                        const s = (sy * w + sx) * 4;
+                        if (sx < w && sy < h && rgba[s + 3]) {
+                            rawAlpha[o] = rgba[s];
+                            rawAlpha[o + 1] = rgba[s + 1];
+                            rawAlpha[o + 2] = rgba[s + 2];
+                            rawAlpha[o + 3] = 255;
+                        } else {
+                            rawAlpha[o] = rawAlpha[o + 1] = rawAlpha[o + 2] = rawAlpha[o + 3] = 0;
+                        }
+                    }
+                }
+                bytes = encodeJpegMulti(rawAlpha, TILE, TILE, 4, quality);
+                if (((j * tx + i) & 7) === 7) {
+                    await new Promise((r) => setTimeout(r, 0));
+                }
+            } else if (useCanvas && tileData) {
+                const d = tileData.data;
+                for (let y = 0; y < TILE; y++) {
+                    const sy = j * TILE + y;
+                    for (let x = 0; x < TILE; x++) {
+                        const sx = i * TILE + x;
+                        const o = (y * TILE + x) * 4;
+                        const s = (sy * w + sx) * 4;
+                        if (sx < w && sy < h && rgba[s + 3]) {
+                            d[o] = rgba[s];
+                            d[o + 1] = rgba[s + 1];
+                            d[o + 2] = rgba[s + 2];
+                            d[o + 3] = 255;
+                        } else {
+                            d[o] = d[o + 1] = d[o + 2] = 0;
+                            d[o + 3] = 255;
+                        }
+                    }
+                }
+                bytes = await encodeRgbJpeg(tileData, quality);
+                if (jpegs.length === 0) sampling = jpegSampling(bytes);
+            } else {
+                const rgb = packRgbTile(rgba, w, h, i, j);
+                bytes = encodeJpegMulti(rgb, TILE, TILE, 3, quality);
+            }
+            jpegs.push(bytes);
+            onTile?.();
+        }
+    }
+    return { width: w, height: h, jpegs, sampling, ycbcr };
+}
+
+const T = { SHORT: 3, LONG: 4, DOUBLE: 12 } as const;
+const SIZE: Record<number, number> = { 3: 2, 4: 4, 12: 8 };
+
+type Tag = [number, number, number[]];
+
+interface IfdDraft {
+    tags: Tag[];
+    tiles: Uint8Array[];
+    offsets?: number[];
+    counts?: number[];
+}
+
+function writeTiff(ifds: IfdDraft[]): Uint8Array {
+    const chunks: Uint8Array[] = [];
+    let off = 8;
+    for (const ifd of ifds) {
+        ifd.offsets = [];
+        ifd.counts = [];
+        for (const t of ifd.tiles) {
+            ifd.offsets.push(off);
+            ifd.counts.push(t.length);
+            chunks.push(t);
+            off += t.length;
+        }
+    }
+    if (off % 2) {
+        chunks.push(new Uint8Array(1));
+        off++;
+    }
+
+    const entriesOf = (ifd: IfdDraft): Tag[] => {
+        const entries: Tag[] = [
+            ...ifd.tags,
+            [324, T.LONG, ifd.offsets!],
+            [325, T.LONG, ifd.counts!],
+        ];
+        entries.sort((a, b) => a[0] - b[0]);
+        return entries;
+    };
+
+    let ifdBytes = 0;
+    for (const ifd of ifds) {
+        const e = entriesOf(ifd);
+        let extra = 0;
+        for (const [, type, vals] of e) {
+            const n = vals.length * SIZE[type];
+            if (n > 4) extra += n + (n % 2);
+        }
+        ifdBytes += 2 + e.length * 12 + 4 + extra;
+    }
+
+    const buf = new ArrayBuffer(ifdBytes);
+    const dv = new DataView(buf);
+    let p = 0;
+    const firstIfd = off;
+    ifds.forEach((ifd, idx) => {
+        const e = entriesOf(ifd);
+        const ifdStart = p;
+        let extra = ifdStart + 2 + e.length * 12 + 4;
+        dv.setUint16(p, e.length, true);
+        p += 2;
+        for (const [tag, type, vals] of e) {
+            dv.setUint16(p, tag, true);
+            dv.setUint16(p + 2, type, true);
+            dv.setUint32(p + 4, vals.length, true);
+            const n = vals.length * SIZE[type];
+            let q = n > 4 ? extra : p + 8;
+            if (n > 4) {
+                dv.setUint32(p + 8, firstIfd + extra, true);
+                extra += n + (n % 2);
+            }
+            for (const v of vals) {
+                if (type === T.SHORT) {
+                    dv.setUint16(q, v, true);
+                    q += 2;
+                } else if (type === T.LONG) {
+                    dv.setUint32(q, v, true);
+                    q += 4;
+                } else {
+                    dv.setFloat64(q, v, true);
+                    q += 8;
+                }
+            }
+            p += 12;
+        }
+        dv.setUint32(p, idx < ifds.length - 1 ? firstIfd + extra : 0, true);
+        p = extra;
+    });
+
+    const header = new Uint8Array(8);
+    const hv = new DataView(header.buffer);
+    header[0] = 0x49;
+    header[1] = 0x49;
+    hv.setUint16(2, 42, true);
+    hv.setUint32(4, firstIfd, true);
+
+    const total = 8 + (off - 8) + ifdBytes;
+    const out = new Uint8Array(total);
+    out.set(header, 0);
+    let pos = 8;
+    for (const chunk of chunks) {
+        out.set(chunk, pos);
+        pos += chunk.length;
+    }
+    out.set(new Uint8Array(buf), pos);
+    return out;
+}
+
+/**
+ * Build an overlay GeoTIFF from a north-up WGS84 RGBA raster (already warped).
+ */
+export async function buildGeoTiff(
+    raster: Raster,
+    bounds: GeoTiffBounds,
+    opts?: GeoTiffOptions,
+): Promise<Uint8Array> {
+    const quality = Math.min(95, Math.max(1, Math.round(opts?.quality ?? 85)));
+    const onProgress = opts?.onProgress;
+
+    const xres = (bounds.east - bounds.west) / raster.width;
+    const yres = (bounds.north - bounds.south) / raster.height;
+    const base: LevelImage = {
+        width: raster.width,
+        height: raster.height,
+        rgba: raster.rgba instanceof Uint8ClampedArray
+            ? raster.rgba
+            : new Uint8ClampedArray(raster.rgba),
+    };
+
+    const levels: LevelImage[] = [base];
+    while (Math.max(levels.at(-1)!.width, levels.at(-1)!.height) > TILE) {
+        levels.push(halveRgba(levels.at(-1)!));
+    }
+
+    const totalTiles = levels.reduce(
+        (n, l) => n + Math.ceil(l.width / TILE) * Math.ceil(l.height / TILE),
+        0,
+    );
+    let done = 0;
+    const tick = () => {
+        done++;
+        if (onProgress && done % 16 === 0) onProgress(done / totalTiles);
+    };
+
+    const withAlpha = hasTransparentPixel(base.rgba);
+
+    const encoded = [];
+    for (let k = 0; k < levels.length; k++) {
+        encoded.push(await encodeLevel(levels[k], quality, withAlpha, tick));
+    }
+
+    const ifds: IfdDraft[] = [];
+    encoded.forEach((lvl, k) => {
+        const tags: Tag[] = [
+            [256, T.LONG, [lvl.width]],
+            [257, T.LONG, [lvl.height]],
+            [284, T.SHORT, [1]],
+            [322, T.SHORT, [TILE]],
+            [323, T.SHORT, [TILE]],
+            [254, T.LONG, [k === 0 ? 0 : 1]],
+            [259, T.SHORT, [7]],
+        ];
+        if (withAlpha) {
+            tags.push(
+                [258, T.SHORT, [8, 8, 8, 8]],
+                [262, T.SHORT, [2]],
+                [277, T.SHORT, [4]],
+                [338, T.SHORT, [2]],
+            );
+        } else if (lvl.ycbcr) {
+            tags.push(
+                [258, T.SHORT, [8, 8, 8]],
+                [262, T.SHORT, [6]],
+                [277, T.SHORT, [3]],
+                [530, T.SHORT, lvl.sampling],
+            );
+        } else {
+            // jpeg-multi 3-band: no colour transform (used when canvas is unavailable).
+            tags.push(
+                [258, T.SHORT, [8, 8, 8]],
+                [262, T.SHORT, [2]],
+                [277, T.SHORT, [3]],
+            );
+        }
+        if (k === 0) {
+            tags.push([33550, T.DOUBLE, [xres, yres, 0]]);
+            tags.push([33922, T.DOUBLE, [0, 0, 0, bounds.west, bounds.north, 0]]);
+            tags.push([34735, T.SHORT, [
+                1, 1, 0, 4,
+                1024, 0, 1, 2,
+                1025, 0, 1, 1,
+                2048, 0, 1, 4326,
+                2054, 0, 1, 9102,
+            ]]);
+        }
+        ifds.push({ tags, tiles: lvl.jpegs });
+    });
+    onProgress?.(1);
+    return writeTiff(ifds);
 }
 
 export interface GeoTiffInfo {
@@ -202,44 +425,62 @@ export interface GeoTiffInfo {
     height: number;
     compression: number;
     samples: number;
-    predictor: number;
-    extraSamples: number;
+    tileWidth: number;
+    tileHeight: number;
+    extraSamples: number | null;
+    photometric: number;
+    newSubfileType: number;
     tieX: number;
     tieY: number;
     scaleX: number;
     scaleY: number;
     geographicType: number;
+    overviewCount: number;
 }
 
+/** Read IFD tags from a little-endian TIFF produced by {@link buildGeoTiff}. */
 export function readGeoTiffInfo(file: Uint8Array): GeoTiffInfo {
     const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
     if (view.getUint16(0, true) !== 0x4949) throw new Error('Expected a little-endian TIFF');
-    const ifd = view.getUint32(4, true);
-    const count = view.getUint16(ifd, true);
-    const tags = new Map<number, { type: number; count: number; value: number }>();
 
-    for (let index = 0; index < count; index++) {
-        const entry = ifd + 2 + index * 12;
-        tags.set(view.getUint16(entry, true), {
-            type: view.getUint16(entry + 2, true),
-            count: view.getUint32(entry + 4, true),
-            value: view.getUint32(entry + 8, true),
-        });
+    function readIfd(ifd: number): Map<number, { type: number; count: number; value: number }> {
+        const count = view.getUint16(ifd, true);
+        const tags = new Map<number, { type: number; count: number; value: number }>();
+        for (let index = 0; index < count; index++) {
+            const entry = ifd + 2 + index * 12;
+            tags.set(view.getUint16(entry, true), {
+                type: view.getUint16(entry + 2, true),
+                count: view.getUint32(entry + 4, true),
+                value: view.getUint32(entry + 8, true),
+            });
+        }
+        return tags;
     }
 
-    function inlineShort(id: number): number {
+    function nextIfd(ifd: number): number {
+        const count = view.getUint16(ifd, true);
+        return view.getUint32(ifd + 2 + count * 12, true);
+    }
+
+    function inlineShort(tags: Map<number, { type: number; count: number; value: number }>, id: number): number {
         const tag = tags.get(id);
         if (!tag) throw new Error(`Missing TIFF tag ${id}`);
         return tag.value & 0xffff;
     }
 
-    function inlineLong(id: number): number {
+    function inlineLong(tags: Map<number, { type: number; count: number; value: number }>, id: number): number {
         const tag = tags.get(id);
         if (!tag) throw new Error(`Missing TIFF tag ${id}`);
         return tag.value >>> 0;
     }
 
-    function doubles(id: number, count: number): number[] {
+    function optionalShort(tags: Map<number, { type: number; count: number; value: number }>, id: number): number | null {
+        const tag = tags.get(id);
+        if (!tag) return null;
+        return tag.value & 0xffff;
+    }
+
+    function doubles(tags: Map<number, { type: number; count: number; value: number }>, id: number, count: number): number[] {
         const tag = tags.get(id);
         if (!tag) throw new Error(`Missing TIFF tag ${id}`);
         const values: number[] = [];
@@ -249,9 +490,18 @@ export function readGeoTiffInfo(file: Uint8Array): GeoTiffInfo {
         return values;
     }
 
-    const scale = doubles(33550, 3);
-    const tie = doubles(33922, 6);
-    const geo = tags.get(34735);
+    let ifd = view.getUint32(4, true);
+    const primary = readIfd(ifd);
+    let overviewCount = 0;
+    let next = nextIfd(ifd);
+    while (next) {
+        overviewCount++;
+        next = nextIfd(next);
+    }
+
+    const scale = doubles(primary, 33550, 3);
+    const tie = doubles(primary, 33922, 6);
+    const geo = primary.get(34735);
     if (!geo) throw new Error('Missing GeoKey directory');
     let geographicType = 0;
     const keyCount = view.getUint16(geo.value + 6, true);
@@ -263,16 +513,20 @@ export function readGeoTiffInfo(file: Uint8Array): GeoTiffInfo {
     }
 
     return {
-        width: inlineLong(256),
-        height: inlineLong(257),
-        compression: inlineShort(259),
-        samples: inlineShort(277),
-        predictor: inlineShort(317),
-        extraSamples: inlineShort(338),
+        width: inlineLong(primary, 256),
+        height: inlineLong(primary, 257),
+        compression: inlineShort(primary, 259),
+        samples: inlineShort(primary, 277),
+        tileWidth: inlineShort(primary, 322),
+        tileHeight: inlineShort(primary, 323),
+        extraSamples: optionalShort(primary, 338),
+        photometric: inlineShort(primary, 262),
+        newSubfileType: optionalShort(primary, 254) ?? 0,
         scaleX: scale[0],
         scaleY: scale[1],
         tieX: tie[3],
         tieY: tie[4],
         geographicType,
+        overviewCount,
     };
 }

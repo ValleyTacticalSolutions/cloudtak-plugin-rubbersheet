@@ -1023,6 +1023,7 @@ async function currentFile(): Promise<{ filename: string; bytes: Uint8Array; mim
         opacity: opacityState.value,
         quad,
         source,
+        quality: sheetUi.exportQuality,
     });
 }
 
@@ -1133,6 +1134,7 @@ export async function addCurrentAsOverlay(): Promise<boolean> {
             opacity: opacityState.value,
             quad,
             source,
+            quality: sheetUi.exportQuality,
         });
         await importAsOverlay(file, sheetUi.name, (text) => {
             sheetUi.status = text;

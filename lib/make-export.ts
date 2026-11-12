@@ -1,4 +1,5 @@
-import { JPEG_QUALITY, MAX_IMAGE_SIDE } from './constants.ts';
+import { MAX_IMAGE_SIDE } from './constants.ts';
+import { clampExportQuality, qualityToCanvas } from './export-quality.ts';
 import { buildGeoPdf } from './geopdf.ts';
 import { buildGeoTiff } from './geotiff.ts';
 import { buildKmz, safeName } from './kmz.ts';
@@ -37,12 +38,18 @@ function canvasToBytes(canvas: HTMLCanvasElement, type: string, quality?: number
     });
 }
 
-async function kmzBytes(name: string, opacity: number, quad: Quad, source: Raster): Promise<Uint8Array> {
+async function kmzBytes(
+    name: string,
+    opacity: number,
+    quad: Quad,
+    source: Raster,
+    quality: number,
+): Promise<Uint8Array> {
     const transparent = hasTransparency(source.rgba);
     const encoded = await canvasToBytes(
         canvasFromRaster(source),
         transparent ? 'image/png' : 'image/jpeg',
-        transparent ? undefined : JPEG_QUALITY,
+        transparent ? undefined : qualityToCanvas(quality),
     );
     return buildKmz({
         name,
@@ -53,12 +60,19 @@ async function kmzBytes(name: string, opacity: number, quad: Quad, source: Raste
     });
 }
 
-async function geotiffBytes(warped: ReturnType<typeof warpNorthUp>): Promise<Uint8Array> {
-    return buildGeoTiff(warped.raster, warped);
+async function geotiffBytes(
+    warped: ReturnType<typeof warpNorthUp>,
+    quality: number,
+): Promise<Uint8Array> {
+    return buildGeoTiff(warped.raster, warped, { quality });
 }
 
-async function geopdfBytes(name: string, warped: ReturnType<typeof warpNorthUp>): Promise<Uint8Array> {
-    const jpeg = await canvasToBytes(canvasFromRaster(warped.raster), 'image/jpeg', JPEG_QUALITY);
+async function geopdfBytes(
+    name: string,
+    warped: ReturnType<typeof warpNorthUp>,
+    quality: number,
+): Promise<Uint8Array> {
+    const jpeg = await canvasToBytes(canvasFromRaster(warped.raster), 'image/jpeg', qualityToCanvas(quality));
     const alpha = new Uint8Array(warped.raster.width * warped.raster.height);
     for (let index = 0; index < alpha.length; index++) {
         alpha[index] = warped.raster.rgba[index * 4 + 3];
@@ -81,12 +95,14 @@ export async function makeExport(kind: Exclude<ExportType, ''>, input: {
     opacity: number;
     quad: Quad;
     source: Raster;
+    quality?: number;
 }): Promise<ExportFile> {
     const name = safeName(input.name);
+    const quality = clampExportQuality(input.quality ?? 85);
     if (kind === 'kmz') {
         return {
             filename: `${name}.kmz`,
-            bytes: await kmzBytes(name, input.opacity, input.quad, input.source),
+            bytes: await kmzBytes(name, input.opacity, input.quad, input.source, quality),
             mime: 'application/vnd.google-earth.kmz',
         };
     }
@@ -94,22 +110,22 @@ export async function makeExport(kind: Exclude<ExportType, ''>, input: {
     if (kind === 'geotiff') {
         return {
             filename: `${name}.tif`,
-            bytes: await geotiffBytes(warped),
+            bytes: await geotiffBytes(warped, quality),
             mime: 'image/tiff',
         };
     }
     if (kind === 'geopdf') {
         return {
             filename: `${name}.pdf`,
-            bytes: await geopdfBytes(name, warped),
+            bytes: await geopdfBytes(name, warped, quality),
             mime: 'application/pdf',
         };
     }
 
     const [kmz, tif, pdf] = await Promise.all([
-        kmzBytes(name, input.opacity, input.quad, input.source),
-        geotiffBytes(warped),
-        geopdfBytes(name, warped),
+        kmzBytes(name, input.opacity, input.quad, input.source, quality),
+        geotiffBytes(warped, quality),
+        geopdfBytes(name, warped, quality),
     ]);
     return {
         filename: `${name}.zip`,

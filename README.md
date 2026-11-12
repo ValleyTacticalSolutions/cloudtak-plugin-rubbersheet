@@ -13,9 +13,11 @@ Requires CloudTAK **13.102** or newer. PDF pages are rendered with [PDF.js](http
 * An opacity slider sits at the bottom of the map, from 0% (transparent) to 100% (fully visible). Scroll the wheel over it to change by 5%. It remembers the last value, and starts at 100% the first time.
 * **Cancel** in the plugin header clears the sheet. Closing the sidebar leaves the sheet on the map so you can keep editing.
 * **Export File Type** is required for Download / Data Sync: KMZ, GeoTIFF, GeoPDF, or a zipped bundle of all three.
+* **Quality** (1–95, default 85) sets JPEG compression for opaque KMZ images, GeoTIFF tiles, and GeoPDF. Transparent KMZ imagery stays PNG.
 * **Download** saves that file. **Upload to Data Sync** lists writable data syncs (same idea as Files → Share to Data Sync — including syncs you can write to even if you are not currently subscribed) and uploads the export.
 * **Add to Map as Overlay** builds a north-up GeoTIFF, imports it through CloudTAK (same path as Files → Add to Map as Overlay), waits for Cloud Optimized tiles via the PMTiles TileJSON endpoint, and opens the Overlays menu. The live rubber-sheet warp stays editable until you Cancel/Remove.
-* Imagery is JPEG quality 85. A picture that already has transparent pixels stays PNG inside the KMZ. GeoTIFF and GeoPDF are a north-up copy of the fitted sheet, at most 4096 px on the long side, so they match what you see even though those formats cannot store a four-corner warp. The KMZ keeps the exact corners with a KML `gx:LatLonQuad`.
+* GeoTIFF and GeoPDF are a north-up copy of the fitted sheet, at most 4096 px on the long side, so they match what you see even though those formats cannot store a four-corner warp. The KMZ keeps the exact corners with a KML `gx:LatLonQuad`.
+* GeoTIFF output is JPEG-tiled WGS84 with internal overviews (and an alpha band when the sheet has transparent pixels) so empty or erased areas stay see-through in ATAK Image Overlay.
 
 ## Install
 

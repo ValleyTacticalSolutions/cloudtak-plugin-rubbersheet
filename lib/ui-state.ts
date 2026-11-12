@@ -1,5 +1,6 @@
 import { reactive } from 'vue';
-import { FORMAT_KEY } from './constants.ts';
+import { FORMAT_KEY, QUALITY_KEY } from './constants.ts';
+import { loadExportQuality } from './export-quality.ts';
 import { loadExportType } from './export-type.ts';
 import type { ExportType } from './export-type.ts';
 import type { WarpMode } from './warp-mode.ts';
@@ -21,6 +22,8 @@ export const sheetUi = reactive({
     hasSheet: false,
     /** Last chosen format (KMZ the first time). */
     exportType: loadExportType(typeof localStorage === 'undefined' ? undefined : localStorage, FORMAT_KEY) as ExportType,
+    /** JPEG quality 1–95 for KMZ (opaque), GeoTIFF, and GeoPDF. */
+    exportQuality: loadExportQuality(typeof localStorage === 'undefined' ? undefined : localStorage, QUALITY_KEY),
     busy: false,
     error: '',
     /** Shown inline once an action has finished; cleared when the next action starts. */

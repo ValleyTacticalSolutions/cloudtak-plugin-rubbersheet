@@ -15,8 +15,10 @@ export const MAX_IMAGE_SIDE = MAX_IMAGE_SIDE_DESKTOP;
 /** Undo steps the image editor keeps (each one is a full RGBA copy of the image). */
 export const EDIT_HISTORY_CAP_DESKTOP = 40;
 export const EDIT_HISTORY_CAP_COARSE = 10;
-export const JPEG_QUALITY = 0.85;
+/** Default JPEG quality (1–95) for KMZ / GeoTIFF / GeoPDF. Prefer sheetUi.exportQuality at runtime. */
+export const JPEG_QUALITY = 85;
 export const FORMAT_KEY = 'cloudtak-rubber-sheet-format';
+export const QUALITY_KEY = 'cloudtak-rubber-sheet-quality';
 /**
  * Which data syncs the "Add to Data Sync" picker offers.
  * 'subscribed' matches the host Share to Data Sync list; 'all' also offers unsubscribed
