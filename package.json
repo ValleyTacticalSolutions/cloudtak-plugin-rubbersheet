@@ -1,6 +1,6 @@
 {
   "name": "cloudtak-plugin-rubber-sheet",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "CloudTAK plugin — rubber-sheet an image or PDF over the map and export KMZ, GeoTIFF, or GeoPDF",
   "license": "Apache-2.0",
