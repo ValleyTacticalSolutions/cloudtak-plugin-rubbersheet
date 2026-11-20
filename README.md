@@ -2,7 +2,9 @@
 
 CloudTAK plugin that stretches an image or PDF over the map, the way ATAK rubber-sheets a floor plan onto a building.
 
-Requires CloudTAK **13.102** or newer. PDF pages are rendered with a vendored copy of [PDF.js](https://github.com/mozilla/pdf.js) 4.10.38 (Apache-2.0) under `lib/vendor/pdfjs/`, so the plugin does not need a host `pdfjs-dist` dependency. Copy-only installs (`WEB_PLUGINS`, marketplace) work once the plugin files are on disk and the API image is rebuilt.
+Requires CloudTAK **13.102** or newer (client plugins under `app/plugins/`). Compatible with **13.124+** (API OXLint / route `Auth.security`): this plugin is app-only and does not copy routes into `api/stateless/routes/`, so it does not need the server-route Auth/OXLint migration. Client lint stays on ESLint.
+
+PDF pages are rendered with a vendored copy of [PDF.js](https://github.com/mozilla/pdf.js) 4.10.38 (Apache-2.0) under `lib/vendor/pdfjs/`, so the plugin does not need a host `pdfjs-dist` dependency. Copy-only installs (`WEB_PLUGINS`, marketplace) work once the plugin files are on disk and the API image is rebuilt.
 
 ## What it does
 
