@@ -2,19 +2,20 @@ import type { App } from 'vue';
 import { h } from 'vue';
 import type { PluginAPI, PluginInstance } from '@tak-ps/cloudtak';
 import HeaderButtons from './lib/HeaderButtons.vue';
-// Host component (the plugin is built inside app/plugins/<name>/, like lib/overlay.ts).
-import MenuTemplate from '../../src/components/CloudTAK/util/MenuTemplate.vue';
+import MenuTemplate from './lib/vendor/MenuTemplate.vue';
 import EditorRoute from './lib/EditorRoute.vue';
 import RubberSheetPane from './lib/RubberSheetPane.vue';
 import { IconRubberSheetState } from './lib/MenuIcon.ts';
 import { EDIT_ROUTE_NAME, EDIT_ROUTE_PATH, MENU_KEY, ROUTE_NAME, ROUTE_PATH } from './lib/constants.ts';
 import { bind, detach } from './lib/sheet.ts';
+import { setHost } from './lib/host.ts';
 
 export default class RubberSheet implements PluginInstance {
     api: PluginAPI;
 
     constructor(api: PluginAPI) {
         this.api = api;
+        setHost(api);
 
         // Routes stay registered. CloudTAK calls disable() before enable() on load,
         // and removing the route there makes the following menu.add fail.
@@ -43,7 +44,14 @@ export default class RubberSheet implements PluginInstance {
     }
 
     async enable(): Promise<void> {
+        // Idempotent: CloudTAK may call enable() repeatedly, and a runtime bundle loads after the map is up.
+        setHost(this.api);
         bind(this.api);
+        try {
+            this.api.menu.remove(MENU_KEY);
+        } catch {
+            // Not added yet.
+        }
         this.api.menu.add({
             key: MENU_KEY,
             label: 'Rubber Sheet',

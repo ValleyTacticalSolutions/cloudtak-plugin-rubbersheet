@@ -221,6 +221,15 @@ if [ ! -d "$CT_DIR/app" ]; then
     exit 1
 fi
 
+MIN_CLOUDTAK="14.4.1"   # CloudTAK version this plugin was built and verified against; minimum only, no upper limit
+if [ "$ACTION" != "remove" ]; then
+    ct_ver=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9][0-9.]*\)".*/\1/p' "$CT_DIR/package.json" 2>/dev/null | head -n1)
+    if [ -n "$ct_ver" ] && [ "$(printf '%s\n%s\n' "$MIN_CLOUDTAK" "$ct_ver" | sort -V | head -n1)" != "$MIN_CLOUDTAK" ]; then
+        echo "ERROR: this plugin requires CloudTAK v$MIN_CLOUDTAK or newer; this checkout is v$ct_ver. Nothing was changed." >&2
+        exit 1
+    fi
+fi
+
 PLUGIN_DEST="$CT_DIR/app/plugins/$INSTALL_DIR_NAME"
 LEGACY_DEST="$CT_DIR/api/web/plugins/$INSTALL_DIR_NAME"
 

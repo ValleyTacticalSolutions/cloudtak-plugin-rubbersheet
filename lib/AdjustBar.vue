@@ -152,7 +152,7 @@ import {
     IconTrash,
 } from '@tabler/icons-vue';
 // Host store (the plugin is built inside app/plugins/<name>/, like lib/overlay.ts).
-import { useAppStore } from '../../../src/stores/app.ts';
+import { hostStore } from './host.ts';
 import { ROUTE_NAME } from './constants.ts';
 import OpacityBar from './OpacityBar.vue';
 import RemoveSheetConfirm from './RemoveSheetConfirm.vue';
@@ -160,7 +160,7 @@ import { clearSheet, redoSheetTransform, undoSheetTransform } from './sheet.ts';
 import { sheetUi } from './ui-state.ts';
 import WarpModeStrip from './WarpModeStrip.vue';
 
-const appStore = useAppStore();
+const appStore = hostStore<{ isMobileDetected: boolean }>('cloudtak-app');
 const route = useRoute();
 const router = useRouter();
 

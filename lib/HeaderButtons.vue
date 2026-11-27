@@ -46,7 +46,7 @@
 import { computed, ref } from 'vue';
 import { TablerIconButton } from '@tak-ps/vue-tabler';
 import { IconArrowBackUp, IconArrowForwardUp, IconTrash } from '@tabler/icons-vue';
-import { useAppStore } from '../../../src/stores/app.ts';
+import { hostStore } from './host.ts';
 import { touchWording } from './device.ts';
 import RemoveSheetConfirm from './RemoveSheetConfirm.vue';
 import { clearSheet, redoSheetTransform, undoSheetTransform } from './sheet.ts';
@@ -55,7 +55,7 @@ import { sheetUi } from './ui-state.ts';
 const confirmRemove = ref(false);
 
 // Keyboard shortcuts are only mentioned where there is a keyboard.
-const appStore = useAppStore();
+const appStore = hostStore<{ isMobileDetected: boolean }>('cloudtak-app');
 const touch = computed(() => touchWording(appStore.isMobileDetected));
 const undoTitle = computed(() => touch.value ? 'Undo' : 'Undo (Ctrl+Z)');
 const redoTitle = computed(() => touch.value ? 'Redo' : 'Redo (Ctrl+Y)');

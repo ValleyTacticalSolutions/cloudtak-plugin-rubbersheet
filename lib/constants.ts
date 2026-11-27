@@ -19,9 +19,3 @@ export const EDIT_HISTORY_CAP_COARSE = 10;
 export const JPEG_QUALITY = 85;
 export const FORMAT_KEY = 'cloudtak-rubber-sheet-format';
 export const QUALITY_KEY = 'cloudtak-rubber-sheet-quality';
-/**
- * Which data syncs the "Add to Data Sync" picker offers.
- * 'subscribed' matches the host Share to Data Sync list; 'all' also offers unsubscribed
- * writable syncs from the server catalog (the list before phase 4).
- */
-export const DATA_SYNC_LIST: 'subscribed' | 'all' = 'subscribed';

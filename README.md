@@ -2,7 +2,9 @@
 
 CloudTAK plugin that stretches an image or PDF over the map, the way ATAK rubber-sheets a floor plan onto a building.
 
-Requires CloudTAK **13.102** or newer (client plugins under `app/plugins/`). Compatible with **13.124+** (API OXLint / route `Auth.security`): this plugin is app-only and does not copy routes into `api/stateless/routes/`, so it does not need the server-route Auth/OXLint migration. Client lint stays on ESLint.
+**Minimum CloudTAK: v14.4.1**. Built and verified against CloudTAK v14.4.1 (commit 184ecb2, 2026-11-27). No upper limit: newer CloudTAK versions are expected to work. Report breakage as an issue.
+
+This plugin is app-only (no `server/` routes), so no server install is needed. It installs two ways: compiled into the CloudTAK web build (Marketplace / `install.sh`), or as a runtime bundle for the CloudTAK iOS and Android apps (see [Mobile](#mobile-cloudtak-app)).
 
 PDF pages are rendered with a vendored copy of [PDF.js](https://github.com/mozilla/pdf.js) 4.10.38 (Apache-2.0) under `lib/vendor/pdfjs/`, so the plugin does not need a host `pdfjs-dist` dependency. Copy-only installs (`WEB_PLUGINS`, marketplace) work once the plugin files are on disk and the API image is rebuilt.
 
@@ -43,8 +45,59 @@ After it finishes: **Settings → Refresh App**. A normal browser refresh is not
 ./install.sh --remove
 ```
 
+## TAK Portal Marketplace
+
+### Configuration required
+
+No additional configuration required.
+
+### Catalog entry
+
+```json
+{
+  "id": "rubber-sheet",
+  "name": "Rubber Sheet",
+  "description": "Stretch an image or PDF over the map and export KMZ, GeoTIFF or GeoPDF",
+  "repo": "https://github.com/ValleyTacticalSolutions/cloudtak-plugin-rubbersheet.git",
+  "ref": "main",
+  "maintainer": "ValleyTacticalSolutions",
+  "web": { "dest": "rubber-sheet" },
+  "exclude": ["test", "docs", "scripts", "release", "dist-bundle", ".github", "vite.bundle.config.ts", "verify-cloudtak.sh", "**/*.md"]
+}
+```
+
+## Mobile (CloudTAK app)
+
+Since CloudTAK 14.2 the iOS and Android apps load only **runtime plugin bundles**, so the compiled install above does not appear on phones. This repo also builds one:
+
+```bash
+npm install
+npm run bundle     # -> release/rubber-sheet-<version>.tar.gz (manifest.json + index.js only)
+```
+
+An admin uploads the tar.gz to `POST /api/plugin/bundle` (Admin > Plugins); each user then enables it under **Settings > Plugins**, and it is stored on the device and loads offline. Tagged GitHub releases attach the tar.gz through `.github/workflows/release.yml`.
+
+How the bundle differs from the compiled plugin:
+
+- The host supplies only `vue`, `vue-router` and `@tak-ps/vue-tabler` (through `globalThis.__CLOUDTAK__`). Everything else, including PDF.js with its worker inlined as a blob URL, is bundled into `index.js`.
+- No core imports. The app store is read from the host's Pinia (`lib/host.ts`), the three CloudTAK components are vendored under `lib/vendor/`, and all API calls use the saved server URL and token (`apiFetch`).
+- The corner and rotate handles are plain DOM elements positioned with `map.project()` (`lib/handle-marker.ts`), so no second MapLibre is bundled.
+- The Add to Data Sync list comes from the server mission catalog (`/api/marti/mission`); the host's local subscription database is not reachable from a bundle. The upload still enforces write access.
+- A new overlay is created with `POST /api/profile/overlay`, then the host map store's `reconcileOverlays()` shows it.
+- `enable()` and `disable()` are idempotent and safe when the plugin loads after the map is already up.
+
+`npm run verify` builds the compiled plugin inside a CloudTAK checkout (set `CLOUDTAK_DIR` to reuse one) and runs its lint, type check and build. The phone-width layout is unchanged.
+
 ### Local development
 
 Symlink this checkout to `CloudTAK/app/plugins/rubber-sheet`, then restart `npm run serve` from the CloudTAK `app` directory. PDF.js is already vendored in the plugin; you do not need to add `pdfjs-dist` to the CloudTAK app.
 
-`@tak-ps/cloudtak` in this repo's `package.json` points at `../../../CloudTAK/app` for types. Change that path if your CloudTAK checkout lives somewhere else.
+Type checking and linting of the compiled plugin happen inside CloudTAK (`npm run verify`). `npm test` runs the unit tests.
+
+## Core imports
+
+None. The bundle and the compiled plugin import nothing from CloudTAK's `src/`. Host state is reached only through `PluginAPI` (`api.map`, `api.menu`, `api.routes`, `api.bottomBar`) and the host Pinia stores `cloudtak-app` (`isMobileDetected`) and `cloudtak` (`reconcileOverlays()`), read by id in `lib/host.ts`. `MenuTemplate.vue`, `SlideDownHeader.vue` and `EmptyInfo.vue` are vendored copies in `lib/vendor/` (AGPL-3.0, from dfpc-coe/CloudTAK); re-sync them when CloudTAK changes its menu chrome.
+
+## License
+
+AGPL-3.0-or-later. See `LICENSE`. Third-party attribution is kept in `NOTICE` and `lib/vendor/pdfjs/LICENSE`: PDF.js (Apache-2.0) is vendored unchanged under `lib/vendor/pdfjs/`, and the vendored CloudTAK components in `lib/vendor/` are AGPL-3.0.

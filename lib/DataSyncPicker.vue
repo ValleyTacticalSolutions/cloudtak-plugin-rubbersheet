@@ -100,7 +100,7 @@ import {
 } from '@tak-ps/vue-tabler';
 import { IconCheck, IconCloudPin, IconShare2 } from '@tabler/icons-vue';
 // Host component (the plugin is built inside app/plugins/<name>/, like lib/overlay.ts).
-import EmptyInfo from '../../../src/components/CloudTAK/util/EmptyInfo.vue';
+import EmptyInfo from './vendor/EmptyInfo.vue';
 import { listMissionsForPicker } from './missions.ts';
 import type { MissionChoice } from './ui-state.ts';
 

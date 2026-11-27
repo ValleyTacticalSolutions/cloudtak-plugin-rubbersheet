@@ -1,38 +1,23 @@
 /**
- * Thin wrapper over the host `std.ts` for the plugin's own API requests (Data Sync upload,
- * Imports, overlay tiles).
- *
- * `stdurl` and `getRuntimeToken` are the part of `std()` that matters in the Capacitor apps:
- * the API lives on the saved server URL (not the app's own origin) and the login token is in
- * Capacitor Preferences. On the web both resolve to the same values as before (same origin,
- * localStorage `CapacitorStorage.token`).
- *
- * `std()` itself is deliberately not used here. It imposes a 20 s timeout (a multi-MB upload or
- * a tile poll can run longer), turns non-JSON error bodies into `Status Code: N: <parse error>`
- * and throws `Error('401')`. Those would change the error text shown in the pane and the
- * `MissionAuthorization` flow, so requests go through `fetch` and `readError` keeps the
- * existing message mapping.
+ * The plugin's own API requests (Data Sync upload, Imports, overlay tiles), built on the host
+ * bridge in ./host.ts so they reach the CloudTAK server URL with the user's token in the native
+ * apps as well as on the web. Responses are returned as `Response` (no throwing on non-2xx, no
+ * 20 s timeout) so the existing error mapping in `readError` keeps working.
  */
-import { getRuntimeToken, stdurl } from '../../../src/std.ts';
+import { apiFetch as hostFetch, apiUrl as hostApiUrl, token } from './host.ts';
 import { errorMessage } from './api-error.ts';
 
 /** Absolute URL for an API path, on the saved server URL in the native apps. */
-export function apiUrl(path: string): string {
-    return stdurl(path).toString();
+export async function apiUrl(path: string): Promise<string> {
+    return (await hostApiUrl(path)).toString();
 }
 
-/** Login token: the host's runtime token, then the stores a plain web session may still use. */
+/** Login token: the host preference, then the stores a plain web session may still use. */
 export async function apiToken(): Promise<string | undefined> {
-    try {
-        const token = await getRuntimeToken();
-        if (token) return token;
-    } catch {
-        // Fall through to the storage lookups below.
-    }
+    const stored = await token();
+    if (stored) return stored;
 
     try {
-        const caps = localStorage.getItem('CapacitorStorage.token');
-        if (caps) return caps;
         const plain = localStorage.getItem('token');
         if (plain) return plain;
     } catch {
@@ -106,10 +91,11 @@ export async function apiFetch(
         headers.set('Authorization', `Bearer ${token}`);
     }
 
-    return fetch(apiUrl(path), {
+    return hostFetch(path, {
         ...init,
-        credentials: 'same-origin',
         headers,
+        raw: true,
+        timeout: 5 * 60 * 1000,
     });
 }
 

@@ -131,12 +131,12 @@ function fdctQuant(blk: Float32Array, div: Float32Array): void {
         const t3 = blk[i + 3] + blk[i + 4];
         const t4 = blk[i + 3] - blk[i + 4];
         let t10 = t0 + t3;
-        let t13 = t0 - t3;
+        const t13 = t0 - t3;
         let t11 = t1 + t2;
         let t12 = t1 - t2;
         tmp[i] = t10 + t11;
         tmp[i + 4] = t10 - t11;
-        let z1 = (t12 + t13) * 0.707106781;
+        const z1 = (t12 + t13) * 0.707106781;
         tmp[i + 2] = t13 + z1;
         tmp[i + 6] = t13 - z1;
         t10 = t4 + t5;
@@ -163,7 +163,7 @@ function fdctQuant(blk: Float32Array, div: Float32Array): void {
         const t3 = tmp[i + 24] + tmp[i + 32];
         const t4 = tmp[i + 24] - tmp[i + 32];
         let t10 = t0 + t3;
-        let t13 = t0 - t3;
+        const t13 = t0 - t3;
         let t11 = t1 + t2;
         let t12 = t1 - t2;
         tmp[i] = t10 + t11;

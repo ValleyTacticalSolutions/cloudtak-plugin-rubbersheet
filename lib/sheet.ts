@@ -1,5 +1,4 @@
 import { watch, type Component } from 'vue';
-import { Marker } from 'maplibre-gl';
 import type { Map as MapLibreMap, MapMouseEvent, MapTouchEvent } from 'maplibre-gl';
 import { BOTTOM_KEY, LAYER_ID, MENU_KEY, SOURCE_ID } from './constants.ts';
 import {
@@ -28,8 +27,8 @@ import AdjustBar from './AdjustBar.vue';
 import { importAsOverlay } from './overlay.ts';
 import { closePdf, openPdf, renderPdfPage, renderPdfThumbnail } from './pdf-render.ts';
 import { sheetUi, type MissionChoice } from './ui-state.ts';
-import { downloadBlob } from '../../../src/std.ts';
-import { isNativePlatform } from '../../../src/utils/capacitor.ts';
+import { HandleMarker } from './handle-marker.ts';
+import { isNative } from './host.ts';
 import type { Raster } from './warp.ts';
 import { resolveCornerDragMode, type CornerDragMode } from './warp-mode.ts';
 
@@ -50,8 +49,8 @@ let overlayCanvas: HTMLCanvasElement | null = null;
 let pristineRgba: Uint8Array | null = null;
 /** Undo/redo stacks persisted when the image editor saves. */
 let savedEditHistory: EditHistorySnapshot | null = null;
-let markers: Marker[] = [];
-let knob: Marker | null = null;
+let markers: HandleMarker[] = [];
+let knob: HandleMarker | null = null;
 /** The Adjust bar's place in the bottom bar, shared with other plugins through the panel contract. */
 let panel: BarPanel | null = null;
 let dragging = false;
@@ -672,12 +671,12 @@ function ensureMarkers(): void {
         element.addEventListener('pointerup', (event) => {
             element.style.cursor = cornerCursor(index, scaleModeActive(event));
         });
-        return new Marker({ element, anchor: 'center' }).setLngLat(current[index]).addTo(mapHost.map);
+        return new HandleMarker(element).setLngLat(current[index]).addTo(mapHost.map);
     });
     const knobElement = rotateHandleElement();
     knobElement.addEventListener('pointerdown', startRotate);
     const knobAt = knobLngLat() ?? current[0];
-    knob = new Marker({ element: knobElement, anchor: 'center' }).setLngLat(knobAt).addTo(mapHost.map);
+    knob = new HandleMarker(knobElement).setLngLat(knobAt).addTo(mapHost.map);
     applyHandleSizes();
     applyHandleVisibility();
     listenModifiers();
@@ -1027,6 +1026,18 @@ async function currentFile(): Promise<{ filename: string; bytes: Uint8Array; mim
     });
 }
 
+/** Plain browser download of a blob through a temporary link. */
+function saveBlob(blob: Blob, filename: string): void {
+    const fileUrl = URL.createObjectURL(new File([blob], filename));
+    const link = document.createElement('a');
+    link.href = fileUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(fileUrl);
+}
+
 /** @returns true when the download finished successfully */
 export async function downloadCurrent(): Promise<boolean> {
     if (!sheetUi.hasSheet || !sheetUi.exportType || sheetUi.busy) return false;
@@ -1038,7 +1049,7 @@ export async function downloadCurrent(): Promise<boolean> {
         const blob = new Blob([file.bytes.slice()], { type: file.mime });
         // In the native apps an anchor download goes nowhere useful, so offer the share sheet
         // (Save to Files, AirDrop, ...) when the WebView supports sharing files.
-        if (isNativePlatform()) {
+        if (isNative()) {
             const shareable = new File([blob], file.filename, { type: file.mime });
             if (typeof navigator.canShare === 'function' && navigator.canShare({ files: [shareable] })) {
                 try {
@@ -1053,7 +1064,7 @@ export async function downloadCurrent(): Promise<boolean> {
             }
         }
         // Web: a plain file download through the host helper (an empty Response has no Content-Disposition).
-        downloadBlob(blob, new Response(null), file.filename);
+        saveBlob(blob, file.filename);
         sheetUi.success = `Downloaded ${file.filename}`;
         return true;
     } catch (err) {

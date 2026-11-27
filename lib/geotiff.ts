@@ -490,7 +490,7 @@ export function readGeoTiffInfo(file: Uint8Array): GeoTiffInfo {
         return values;
     }
 
-    let ifd = view.getUint32(4, true);
+    const ifd = view.getUint32(4, true);
     const primary = readIfd(ifd);
     let overviewCount = 0;
     let next = nextIfd(ifd);

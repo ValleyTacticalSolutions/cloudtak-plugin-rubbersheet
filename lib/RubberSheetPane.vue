@@ -354,8 +354,8 @@ import {
     IconUpload,
 } from '@tabler/icons-vue';
 // Host modules (the plugin is built inside app/plugins/<name>/, like lib/overlay.ts).
-import SlideDownHeader from '../../../src/components/CloudTAK/util/SlideDownHeader.vue';
-import { useAppStore } from '../../../src/stores/app.ts';
+import SlideDownHeader from './vendor/SlideDownHeader.vue';
+import { hostStore } from './host.ts';
 import DataSyncPicker from './DataSyncPicker.vue';
 import { touchWording as useTouchWording } from './device.ts';
 import PdfPagePicker from './PdfPagePicker.vue';
@@ -383,7 +383,7 @@ const props = defineProps<{
     api: PluginAPI;
 }>();
 
-const appStore = useAppStore();
+const appStore = hostStore<{ isMobileDetected: boolean }>('cloudtak-app');
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const confirmRemove = ref(false);

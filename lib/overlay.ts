@@ -2,13 +2,14 @@
  * Upload a GeoTIFF through CloudTAK Imports and register it as a profile overlay,
  * matching the Files menu "Add to Map as Overlay" flow:
  * PUT /api/import → wait for Success → wait for .pmtiles TileJSON →
- * OverlayManager.createLoaded (API + local overlay stack).
+ * the host map store's overlay reconcile.
  *
  * Note: there is no GET /api/profile/asset/:id metadata route — poll
  * GET /api/profile/asset/:id.pmtiles/tile until Cloud Optimized tiles exist.
  */
 
 import { apiFetch, apiUrl, readError } from './api.ts';
+import { hostStore } from './host.ts';
 
 const POLL_MS = 2000;
 const MAX_WAIT_MS = 5 * 60 * 1000;
@@ -94,7 +95,7 @@ async function waitForTileJson(assetId: string): Promise<{ type: 'raster' | 'vec
                 type = tile.includes('.mvt') ? 'vector' : 'raster';
             }
             // Stored absolute like the Files flow does (stdurl), so the native apps reach the server.
-            return { type, url: apiUrl(tileUrl) };
+            return { type, url: await apiUrl(tileUrl) };
         }
 
         // 404 while tiling is still running is expected; other errors are real failures.
@@ -117,25 +118,11 @@ type OverlayCreateBody = {
     opacity: number;
 };
 
-function isModuleLoadError(err: unknown): boolean {
-    const message = err instanceof Error ? err.message : String(err);
-    return /Failed to fetch dynamically imported module|Cannot find module|Failed to resolve|Module not found/i.test(message);
-}
-
 /**
- * CloudTAK's overlay menu / map stack only show layers loaded through
- * OverlayManager.createLoaded (API + IndexedDB + map). A bare POST leaves the
- * file in Files but never attaches it to the live overlay list.
- *
- * Resolved by the CloudTAK Vite app when this plugin lives under app/plugins/.
+ * Register the file as a profile overlay through the API, then ask the host map store to
+ * reconcile its overlay list so the layer shows up in the live overlay menu and on the map
+ * (what OverlayManager.createLoaded does inside CloudTAK). A bundle cannot import that module.
  */
-async function createLoadedOverlay(body: OverlayCreateBody): Promise<void> {
-    const mod = await import('../../../src/base/overlay.ts') as {
-        default: { createLoaded: (body: OverlayCreateBody) => Promise<unknown> };
-    };
-    await mod.default.createLoaded(body);
-}
-
 async function createProfileOverlay(opts: {
     url: string;
     name: string;
@@ -152,20 +139,19 @@ async function createProfileOverlay(opts: {
         opacity: 1,
     };
 
-    try {
-        await createLoadedOverlay(body);
-        return;
-    } catch (err) {
-        if (!isModuleLoadError(err)) throw err;
-    }
-
-    // Standalone / test fallback — API only (will not appear in the live menu).
     const response = await authFetch('/api/profile/overlay', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
     });
     if (!response.ok) throw new Error(await readError(response));
+
+    try {
+        const map = hostStore<{ reconcileOverlays?: () => Promise<void> }>('cloudtak');
+        await map.reconcileOverlays?.();
+    } catch {
+        // The overlay is saved; it appears after the next overlay refresh.
+    }
 }
 
 /**
